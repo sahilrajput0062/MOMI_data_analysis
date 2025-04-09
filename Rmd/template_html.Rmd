@@ -1,0 +1,11 @@
+---
+title: "MOMI Data Analysis"
+output:  
+  html_document:
+    toc: true               # Enable table of contents
+    toc_float: true         # Floating TOC (sticks to side)
+    toc_depth: 3            # Show up to 3 heading levels
+    code_folding: hide      # Hide code by default
+    theme: cosmo            # Optional: adds styling
+    highlight: tango 
+---

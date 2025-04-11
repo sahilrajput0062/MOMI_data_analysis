@@ -1,0 +1,738 @@
+---
+title: "MOMI Data Analysis"
+output:  
+  html_document:
+    toc: true               # Enable table of contents
+    toc_float: true         # Floating TOC (sticks to side)
+    toc_depth: 3            # Show up to 3 heading levels
+    code_folding: hide      # Hide code by default
+    theme: cosmo            # Optional: adds styling
+    highlight: tango 
+---
+
+# MOMI Data Analysis
+
+## EDA
+
+### Loading Required Libraries
+
+```{r chunk_1, message=FALSE, warning=FALSE}
+# Load required packages
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tibble)
+#library(skimr)
+library(patchwork)
+library(gtsummary)
+```
+
+### Importing MOMI Data
+
+#### 1. Sample Maternal Data
+
+```{r chunk_2, message=FALSE, warning=FALSE}
+sample_maternal_data <- read_excel("C:/Users/Dell/Desktop/THSTI-CDSA work/MOMI Data Analysis/preg_intensities_sb_stratified_maternal.xlsx", col_types = "text")
+
+sample_maternal_data <- sample_maternal_data %>%
+    type.convert(as.is = TRUE)  # Automatically convert to appropriate types
+
+head(sample_maternal_data)    
+```
+
+```{r chunk_3, message=FALSE, warning=FALSE}
+cat("Dimesions of Maternal Data:",dim(sample_maternal_data))
+```
+
+#### 2. Sample cord data
+
+```{r chunk_4, message=FALSE, warning=FALSE}
+sample_cord_data <- read_excel("C:/Users/Dell/Desktop/THSTI-CDSA work/MOMI Data Analysis/preg_intensities_sb_stratified_cord.xlsx", col_types = "text")
+
+# Convert columns to appropriate types
+sample_cord_data <- sample_cord_data %>%
+    type.convert(as.is = TRUE)
+
+head(sample_cord_data)
+```
+
+```{r chunk_5, message=FALSE, warning=FALSE}
+cat("Dimesions of cord Data:",dim(sample_cord_data))
+```
+
+#### 3. Clinical Data
+
+```{r chunk_6, message=FALSE, warning=FALSE}
+clinical_data <- read_excel("C:/Users/Dell/Desktop/THSTI-CDSA work/MOMI Data Analysis/momi_combined_data.xlsx", col_types = "text")
+
+clinical_data <- clinical_data %>%
+    type.convert(as.is = TRUE)  # Automatically convert to appropriate types
+
+head(clinical_data)
+```
+
+```{r chunk_7, message=FALSE, warning=FALSE}
+cat("Dimesions of clinical data:",dim(clinical_data))
+```
+
+### Adding Site and GA_weeks in clinical data
+
+#### Adding Site from Site Code
+
+```{r chunk_8, message=FALSE, warning=FALSE}
+clinical_data <- clinical_data %>%
+  mutate(SITE = case_when(
+    SITE_CODE == 1 ~ "ZAPPS",
+    SITE_CODE == 2 ~ "GAPPSB",
+    SITE_CODE == 3 ~ "AMANHIP",
+    SITE_CODE == 4 ~ "AMANHIB",
+    SITE_CODE == 5 ~ "AMANHIT",
+    SITE_CODE == 6 ~ "THSTI",
+    TRUE ~ as.character(SITE_CODE)  # Handle any other cases
+  ))
+
+  head(clinical_data$SITE)
+```
+
+```{r chunk_9, message=FALSE, warning=FALSE}
+# Check for missing values in SITE column
+sum(is.na(clinical_data$SITE))
+```
+
+#### Calculating GA_weeks to merge both files
+
+```{r chunk_10, message=FALSE, warning=FALSE}
+# Add new columns to the clinical_data dataframe
+clinical_data <- clinical_data %>%
+  mutate(
+    VISITDT = as.Date(VISITDT, format = "%Y-%m-%d", origin = "1899-12-30"),
+    VDT_ENR = as.Date(VDT_ENR, format = "%Y-%m-%d", origin = "1899-12-30"),
+    DATE_LMP = as.Date(DATE_LMP, format = "%Y-%m-%d", origin = "1899-12-30"),
+    DATE_USG = as.Date(DATE_USG, format = "%Y-%m-%d", origin = "1899-12-30"),
+    
+    # Create a unique ID by combining ORIG_ID and SITE
+    id = paste(ORIG_ID, SITE, sep = "_"),
+    
+    # Calculate GA_crl (Gestational Age based on Crown-Rump Length)
+    GA_crl = exp(1.684969 + (0.315646 * CRL) - (0.049306 * CRL^2) + 
+                 (0.004057 * CRL^3) - (0.000120456 * CRL^4)),
+    
+    # Calculate GA_hadlock (Gestational Age based on Hadlock formula)
+    GA_hadlock = 10.50 + 0.197 * (BPD * FL) + 0.9500 * FL + 0.7300 * BPD,
+    
+    # Calculate GA_weeks (final gestational age at enrollment)
+    GA_weeks = ifelse(is.na(GA_crl), GA_hadlock, GA_crl)
+  )
+
+head(clinical_data$GA_weeks)
+```
+
+#### Summary of GA_weeks and its derivatives
+
+```{r chunk_11, message=FALSE, warning=FALSE}
+clinical_data %>%
+  select(CRL, FL, BPD, GA_crl, GA_hadlock, GA_weeks) %>%
+  tbl_summary(
+    statistic = list(all_continuous() ~ "Median : {median}, IQR: ({p25}, {p75}), Values present: {N_nonmiss}, NA : {N_miss}"),
+    missing = "no"
+  ) %>%
+  as_kable()
+```
+
+## Data cleaning
+
+### Formatting Columns
+
+```{r chunk_12, message=FALSE, warning=FALSE}
+colnames(clinical_data)
+colnames(sample_maternal_data)
+colnames(sample_cord_data)
+```
+
+```{r chunk_13, message=FALSE, warning=FALSE}
+# Ensure column names match
+colnames(sample_maternal_data) <- toupper(colnames(sample_maternal_data))
+colnames(clinical_data) <- toupper(colnames(clinical_data))
+colnames(sample_cord_data) <- toupper(colnames(sample_cord_data))
+
+# common columns in both maternal and clinical data
+common_columns <- intersect(colnames(sample_maternal_data), colnames(clinical_data))
+print(common_columns)
+```
+
+### Duplicate rows
+
+```{r chunk_14, message=FALSE, warning=FALSE}
+# Find duplicate rows based on ORIG_ID, SITE, VISITDT and BABY_ID
+duplicate_rows <- clinical_data %>%
+  group_by(ORIG_ID, SITE, VISITDT, BABY_ID) %>% 
+  filter(n() > 1) %>% # Keep only rows that appear more than once
+  ungroup() 
+
+print(duplicate_rows)
+cat("Total duplicate rows:", nrow(duplicate_rows), "\n")
+```
+
+## Data Distribution
+
+### Calculating Participants
+
+```{r chunk_15, message=FALSE, warning=FALSE}
+#Unique count of distinct columns (ORIG_ID, SITE) in both data frames
+clinical_particip <- clinical_data %>%
+  distinct(ORIG_ID, SITE) %>%
+  nrow()
+
+maternal_particip <- sample_maternal_data %>%
+  distinct(ORIG_ID, SITE) %>%
+  nrow()
+
+cord_particip <- sample_cord_data %>%
+  distinct(ORIG_ID, SITE) %>%
+  nrow()
+
+cat("Participants in clinical data:",clinical_particip,"\n")
+cat("Participants in maternal data:",maternal_particip,"\n")
+cat("Participants in cord data:",cord_particip,"\n")
+```
+
+#### Count of Maternal participants`s clinical data available or not
+
+```{r chunk_16, message=FALSE, warning=FALSE}
+matching_rows <- suppressMessages(inner_join(
+    sample_maternal_data %>% distinct(ORIG_ID, SITE),
+    clinical_data %>% distinct(ORIG_ID, SITE),
+    relationship = "many-to-many"
+) %>% nrow())
+
+# Find records in maternal data that don't match clinical data
+maternal_no_match <- suppressMessages(anti_join(
+    sample_maternal_data %>% distinct(ORIG_ID, SITE),
+    clinical_data %>% distinct(ORIG_ID, SITE)
+) %>% nrow())
+
+cat("Participants (clinical data available):",matching_rows,"\n")
+cat("Participants those clinical data is not present:", maternal_no_match)
+```
+
+#### Count of cord participants`s clinical data available or not
+
+```{r chunk_17, message=FALSE, warning=FALSE}
+matching_rows <- suppressMessages(inner_join(
+    sample_cord_data %>% distinct(ORIG_ID, SITE),
+    clinical_data %>% distinct(ORIG_ID, SITE),
+    relationship = "many-to-many"
+) %>% nrow())
+
+# Find records in cord data that don't match clinical data
+cord_no_match <- suppressMessages(anti_join(
+    sample_cord_data %>% distinct(ORIG_ID, SITE),
+    clinical_data %>% distinct(ORIG_ID, SITE)
+) %>% nrow())
+
+cat("Participants (clinical data available):", matching_rows, "\n")
+cat("Participants whose clinical data is not present:", cord_no_match, "\n")
+```
+
+#### Participants matching in maternal and cord data
+
+```{r chunk_18, message=FALSE, warning=FALSE}
+matching_rows <- suppressMessages(inner_join(
+    sample_cord_data %>% distinct(ORIG_ID, SITE),
+    sample_maternal_data %>% distinct(ORIG_ID, SITE),
+    relationship = "many-to-many"
+) %>% nrow())
+
+# Find records in cord data that don't match maternal data
+maternal_no_match <- suppressMessages(anti_join(
+    sample_cord_data %>% distinct(ORIG_ID, SITE),
+    sample_maternal_data %>% distinct(ORIG_ID, SITE)
+) %>% nrow())
+
+cat("Participants available in both data:",matching_rows,"\n")
+cat("Participants (from cord data) not available in maternal data:", maternal_no_match)
+```
+
+#### Formatting in Table
+
+```{r chunk_19, message=FALSE, warning=FALSE}
+# Create a data frame
+data_table <- data.frame(
+  Data = c("Clinical data", "Maternal data", "Cord data"),
+  Participants = c(clinical_particip, maternal_particip, cord_particip),
+  Rows = c(nrow(clinical_data), nrow(sample_maternal_data), nrow(sample_cord_data)),
+  Columns = c(ncol(clinical_data), ncol(sample_maternal_data), ncol(sample_cord_data)),
+  stringsAsFactors = FALSE # Avoid automatic factor conversion
+)
+
+# Convert the data frame to a tibble
+data_table_tibble <- as_tibble(data_table)
+
+# Print the tibble
+print(data_table_tibble)
+```
+
+### Discrepancy between clinical and metabolomics datasets
+
+#### Maternal sample data
+
+```{r chunk_20, message=FALSE, warning=FALSE}
+# Participants in maternal data
+total_maternal <- sample_maternal_data %>% distinct(ORIG_ID, SITE) %>% nrow()
+
+# Find records in maternal sample data that don't match clinical data
+overall_maternal_no_match <- suppressMessages(anti_join(
+    sample_maternal_data %>% distinct(ORIG_ID, SITE),
+    clinical_data %>% distinct(ORIG_ID, SITE)
+) %>% nrow())
+
+cat("Maternal sample data:", "\n")
+cat("Total records in sample_maternal_data:", total_maternal, "\n")
+cat("Records not present in clinical_data (Sample only):", overall_maternal_no_match, "\n")
+```
+
+#### Clinical data
+
+```{r chunk_21, message=FALSE, warning=FALSE}
+# Participants in clinical data
+total_clinical <- clinical_data %>% distinct(ORIG_ID, SITE) %>% nrow()
+
+# Find records in clinical data that don't match maternal sample data
+overall_clinical_no_match <- suppressMessages(anti_join(
+    clinical_data %>% distinct(ORIG_ID, SITE),
+    sample_maternal_data %>% distinct(ORIG_ID, SITE)
+) %>% nrow())
+
+cat("Clinical data:", "\n")
+cat("Total records in clinical data:", total_clinical, "\n")
+cat("Records not present in sample data (Clinical only):", overall_clinical_no_match, "\n")
+```
+
+#### Sample and clinical
+
+```{r chunk_22, message=FALSE, warning=FALSE}
+# Find matching records between sample_maternal_data and clinical_data
+matching_data <- inner_join(
+    sample_maternal_data,
+    clinical_data,
+    by = c("SITE", "ORIG_ID"),
+    relationship = "many-to-many"
+)  %>%
+distinct(SITE, ORIG_ID)
+
+sample_clinical <- nrow(matching_data)
+
+cat("Matching Data Analysis:\n")
+cat("Total matching records:", sample_clinical, "\n")
+```
+
+#### Total 
+
+```{r chunk_23, message=FALSE, warning=FALSE}
+# full outer join to get total data in Sample and Clinical
+total_data <- full_join(
+    sample_maternal_data,
+    clinical_data,
+    by = c("SITE", "ORIG_ID"),
+    relationship = "many-to-many"
+) %>%
+distinct(SITE, ORIG_ID)
+
+# Calculate total matches
+total_matches <- nrow(total_data)
+
+# Display matching analysis
+cat("Matching Data Analysis:\n")
+cat("Total matching records (distinct SITE and ORIG_ID):", total_matches, "\n")
+```
+
+#### Discrepancy BY SITES
+
+```{r chunk_24, message=FALSE, warning=FALSE}
+# Get unique SITE values
+sites <- unique(c(sample_maternal_data$SITE, clinical_data$SITE))
+
+sample_only <- c()
+clinical_only <- c()
+sample_and_clinical <- c()
+total <- c()
+
+# Create analysis for each site
+for(site in sites) {
+    # Filter data for current site
+    maternal_site <- sample_maternal_data %>% 
+        filter(SITE == site) %>% 
+        distinct(ORIG_ID, SITE)
+    
+    clinical_site <- clinical_data %>% 
+        filter(SITE == site) %>% 
+        distinct(ORIG_ID, SITE)
+    
+    # Calculate statistics
+    total_maternal <- nrow(maternal_site)
+    total_clinical <- nrow(clinical_site)
+    
+    # Find unmatched records (suppress join messages)
+    maternal_no_match <- suppressMessages(
+        anti_join(maternal_site, clinical_site) %>% nrow()
+    )
+    clinical_no_match <- suppressMessages(
+        anti_join(clinical_site, maternal_site) %>% nrow()
+    )
+    
+    # Find matching records (suppress join message)
+    matching <- suppressMessages(
+        inner_join(maternal_site, clinical_site) %>% nrow()
+    )
+
+    # Total distinct records in both datasets
+    total_matching <- suppressMessages(
+        full_join(maternal_site, clinical_site) %>% nrow())
+    
+    # Display results for current site
+    cat("\nAnalysis for", site, ":\n")
+      # Append site only if it is not already in sites
+    if (!(site %in% sites)) {
+        sites <- c(sites, site)
+    }
+    cat("Maternal Data:\n")
+    cat("Total distinct records:", total_maternal, "\n")
+    cat("Records not in clinical data (Sample only):", maternal_no_match, "\n")
+    sample_only <- c(sample_only, maternal_no_match)
+    
+    cat("Clinical Data:\n")
+    cat("Total distinct records:", total_clinical, "\n")
+    cat("Records not in maternal data (Clinical only):", clinical_no_match, "\n")
+    clinical_only <- c(clinical_only, clinical_no_match)
+    
+    cat("Matching Records (Sample and Clinical):", matching, "\n")
+    sample_and_clinical <- c(sample_and_clinical, matching)
+    cat("TOtal distinct records in both Sample and Clinical:", total_matching, "\n")
+    total <- c(total, total_matching)
+    cat("----------------------------------------\n")
+}
+```
+
+#### Formatting in Table
+
+```{r chunk_25, message=FALSE, warning=FALSE}
+# Create a data frame using the vectors
+data_table <- data.frame(
+  sites = c(sites, "OVERALL"),
+  sample_only = c(sample_only, overall_maternal_no_match),
+  clinical_only = c(clinical_only, overall_clinical_no_match),
+  sample_and_clinical = c(sample_and_clinical, sample_clinical),
+  total = c(total, total_matches)
+)
+
+# Convert the data frame to a tibble
+data_table_tibble <- as_tibble(data_table)
+
+# Print the tibble
+print(data_table_tibble)
+```
+
+### Visit wise clinical data distribution
+
+```{r chunk_26, message=FALSE, warning=FALSE}
+# Find duplicate rows based on ORIG_ID, SITE, and VISITDT
+duplicate_rows <- clinical_data %>%
+  group_by(ORIG_ID, SITE, VISITDT, BABY_ID) %>% # Group by the unique key columns
+  filter(n() > 1) %>% # Keep only rows that appear more than once
+  ungroup() %>% # Remove grouping
+  select(ORIG_ID, SITE, VISITDT, BABY_ID) # Select only the relevant columns
+
+# Print the duplicate rows
+print(duplicate_rows)
+```
+
+#### Adding Visit column in Clinical Data
+
+```{r chunk_27, message=FALSE, warning=FALSE}
+# Add a visit_number column to clinical_data
+clinical_data <- clinical_data %>%
+  select(ORIG_ID, SITE, VISITDT, BABY_ID, everything()) %>% # Ensure VISITDT is included
+  group_by(ORIG_ID, SITE, BABY_ID) %>% # Group by unique key columns
+  arrange(VISITDT, .by_group = TRUE) %>% # Arrange VISITDT in ascending order for each group
+  mutate(visit_number = row_number()) %>% # Assign visit numbers based on the order of VISITDT
+  ungroup() # Remove grouping
+```
+
+```{r chunk_28, message=FALSE, warning=FALSE}
+# Initialize an empty list to store visit statistics
+visit <- list()
+
+# Loop through visits 1 to 4
+for (i in 1:4) {
+  # Filter data for the current visit
+  visits <- clinical_data %>% filter(visit_number == i)
+  
+  # Print the number of participants for the current visit
+  cat("Visit", i, ":", nrow(visits), "\n")
+  
+  # If there are no rows for the current visit, skip the statistics calculation
+  if (nrow(visits) == 0) {
+    visit[[i]] <- list(
+      participants = 0,
+      min_max = "No data",
+      mean_sd = "No data",
+      median_iqr = "No data"
+    )
+    next
+  }
+  
+  # Calculate statistics for GA_WEEKS
+  min_val <- min(visits$GA_WEEKS, na.rm = TRUE)
+  max_val <- max(visits$GA_WEEKS, na.rm = TRUE)
+  mean_val <- mean(visits$GA_WEEKS, na.rm = TRUE)
+  sd_val <- sd(visits$GA_WEEKS, na.rm = TRUE)
+  median_val <- median(visits$GA_WEEKS, na.rm = TRUE)
+  q1 <- quantile(visits$GA_WEEKS, 0.25, na.rm = TRUE) # 25th percentile
+  q3 <- quantile(visits$GA_WEEKS, 0.75, na.rm = TRUE) # 75th percentile
+  
+  # Store statistics in the desired format
+  visit[[i]] <- list(
+    participants = nrow(visits),
+    min_max = paste(round(min_val, 0), round(max_val, 0), sep = ", "),
+    mean_sd = paste(round(mean_val, 0), "(", round(sd_val, 0), ")", sep = ""),
+    median_iqr = paste(round(median_val, 0), "(", round(q1, 0), "-", round(q3, 0), ")", sep = "")
+  )
+}
+```
+
+#### Formatting in Table
+
+```{r chunk_29, message=FALSE, warning=FALSE}
+# Initialize the data frame with the first column
+data_table <- data.frame(
+  total = c("Participants (N)", "GA (WEEKS) MIN, MAX", "GA WEEKS Mean(SD)", "GA WEEKS Median (IQR)")
+)
+
+# Loop through the visits and add columns dynamically
+for (i in 1:4) {
+  if (!is.null(visit[[i]])) {
+    data_table[[paste0("visit", i)]] <- c(
+      visit[[i]]$participants, # Number of participants
+      visit[[i]]$min_max, # Min, Max
+      visit[[i]]$mean_sd, # Mean(SD)
+      visit[[i]]$median_iqr # Median(IQR)
+    )
+  } else {
+    data_table[[paste0("visit", i)]] <- c("No data", "No data", "No data", "No data")
+  }
+}
+
+# Convert the data frame to a tibble
+data_table_tibble <- as_tibble(data_table)
+
+# Print the tibble
+print(data_table_tibble)
+```
+
+### Distribution of GA by Visit
+
+```{r chunk_30, message=FALSE, warning=FALSE}
+plots <- list()
+
+for (i in 1:4) {
+  visit <- clinical_data %>% filter(visit_number == i, !is.na(GA_WEEKS))
+  
+  p <- ggplot(data = visit, aes(x = GA_WEEKS)) +
+    geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+    labs(
+      title = paste("Distribution of GA by Visit", i),
+      x = "Gestational Age WEEKS",
+      y = "Frequency"
+    ) +
+    theme_minimal()
+  
+  # Add the plot to the list
+  plots[[i]] <- p
+}
+
+# Combine all plots using patchwork
+combined_plot <- plots[[1]] + plots[[2]] + plots[[3]] + plots[[4]] + 
+  plot_layout(ncol = 2) # Arrange plots in 2 columns
+
+print(combined_plot)
+```
+
+### Trimester wise maternal sample distribution
+
+#### Adding Trimester Column
+
+```{r chunk_31, message=FALSE, warning=FALSE}
+# Add a trimester column to clinical_data
+clinical_data <- clinical_data %>%
+  mutate(
+    TRIMESTER = case_when(
+      is.na(GA_WEEKS) ~ NA_integer_,  # Handle missing values
+      GA_WEEKS < 14 ~ 1,  # First trimester
+      GA_WEEKS < 28 ~ 2,  # Second trimester
+      TRUE ~ 3            # Third trimester
+    )
+  )
+
+# Display the first few rows to verify
+head(clinical_data$TRIMESTER)
+```
+
+```{r chunk_32, message=FALSE, warning=FALSE}
+clinical_data %>%
+  select(GA_WEEKS, TRIMESTER) %>%
+  head()
+```
+
+## Removing NA values
+
+```{r chunk_33, message=FALSE, warning=FALSE}
+columns <- c("ORIG_ID", "SITE", "GA_WEEKS")
+
+for(col in columns) {
+    cat("NA count in", col, ":", sum(is.na(clinical_data[[col]])), "\n")
+}
+```
+
+```{r chunk_34, message=FALSE, warning=FALSE}
+# Store original dimensions
+orig_dim <- dim(clinical_data)
+
+# Filter out rows with missing values in key columns
+clinical_data <- clinical_data %>%
+  filter(!is.na(GA_WEEKS))
+
+# Display filtering results
+cat("Original dimensions:", orig_dim[1], "rows,", orig_dim[2], "columns\n")
+cat("After filtering:", nrow(clinical_data), "rows,", ncol(clinical_data), "columns\n")
+cat("Rows removed:", orig_dim[1] - nrow(clinical_data), "\n")
+
+# Verify no missing values in key columns
+cat("\nMissing values:\n")
+cat("GA_WEEKS:", sum(is.na(clinical_data$GA_WEEKS)), "\n")
+```
+
+```{r chunk_35, message=FALSE, warning=FALSE}
+columns <- c("ORIG_ID", "SITE", "GA_WEEKS")
+
+for(col in columns) {
+    cat("NA count in", col, ":", sum(is.na(clinical_data[[col]])), "\n")
+}
+```
+
+## Merging clinical and sample data
+
+#### Changing Data Types of both Dataframes
+
+```{r chunk_36, message=FALSE, warning=FALSE}
+# Check data types
+cat("Sample data:\n")
+cat("ORIG_ID types:", class(sample_maternal_data$ORIG_ID), "\n")
+cat("SITE types:", class(sample_maternal_data$SITE), "\n")
+cat("GA_WEEKS types:", class(sample_maternal_data$GA_WEEKS), "\n")
+
+cat("\nClinical data:\n")
+cat("ORIG_ID types:", class(clinical_data$ORIG_ID), "\n")
+cat("SITE types:", class(clinical_data$SITE), "\n")
+cat("GA_WEEKS types:", class(clinical_data$GA_WEEKS), "\n")
+```
+
+```{r chunk_37, message=FALSE, warning=FALSE}
+# Convert columns to same type in both dataframes
+sample_maternal_data <- sample_maternal_data %>%
+  mutate(
+    ORIG_ID = as.character(ORIG_ID),
+    SITE = as.character(SITE),
+    GA_WEEKS = as.numeric(GA_WEEKS)
+  )
+
+clinical_data <- clinical_data %>%
+  mutate(
+    ORIG_ID = as.character(ORIG_ID),
+    SITE = as.character(SITE),
+    GA_WEEKS = as.numeric(GA_WEEKS)
+  )
+
+  # Check data types
+cat("Sample data:\n")
+cat("ORIG_ID types:", class(sample_maternal_data$ORIG_ID), "\n")
+cat("SITE types:", class(sample_maternal_data$SITE), "\n")
+cat("GA_WEEKS types:", class(sample_maternal_data$GA_WEEKS), "\n")
+
+cat("\nClinical data:\n")
+cat("ORIG_ID types:", class(clinical_data$ORIG_ID), "\n")
+cat("SITE types:", class(clinical_data$SITE), "\n")
+cat("GA_WEEKS types:", class(clinical_data$GA_WEEKS), "\n")
+```
+
+#### Removing Unwanted spaces
+
+```{r chunk_38, message=FALSE, warning=FALSE}
+# Check for any case differences or leading/trailing spaces
+clinical_data <- clinical_data %>%
+  mutate(
+    ORIG_ID = trimws(ORIG_ID),
+    SITE = trimws(SITE),
+    GA_WEEKS = round(GA_WEEKS, 2)  # Round to 2 decimal places
+  )
+
+sample_maternal_data <- sample_maternal_data %>%
+  mutate(
+    ORIG_ID = trimws(ORIG_ID),
+    SITE = trimws(SITE),
+    GA_WEEKS = round(GA_WEEKS, 2)  # Round to 2 decimal places
+  )
+```
+
+#### Left Join
+
+```{r chunk_39, message=FALSE, warning=FALSE}
+dim(clinical_data)
+```
+
+```{r chunk_40, message=FALSE, warning=FALSE}
+# Perform left join
+leftjoin_data <- merge(
+    x = clinical_data,
+    y = sample_maternal_data,
+    by = c("ORIG_ID", "SITE", "GA_WEEKS"),
+    all.x = TRUE    # Keep all rows from clinical_data
+)
+
+# Display dimensions and summary
+cat("Dimensions of datasets:\n")
+cat("Clinical data:", dim(clinical_data), "\n")
+cat("Sample maternal data:", dim(sample_maternal_data), "\n")
+cat("Merged data:", dim(leftjoin_data), "\n")
+```
+
+```{r chunk_41, message=FALSE, warning=FALSE}
+cat("NA values in SB_CASE in maternal data:", sum(is.na(sample_maternal_data$SB_CASE)), "\n")
+```
+
+```{r chunk_42, message=FALSE, warning=FALSE}
+cat("Total rows:", nrow(leftjoin_data), "\n")
+cat("NA values in merged data in SB_CASE:", sum(is.na(leftjoin_data$SB_CASE)), "\n")
+cat("Non-NA values in merged data in SB_CASE:", nrow(leftjoin_data) - sum(is.na(leftjoin_data$SB_CASE)), "\n")
+```
+
+#### Inner Join
+
+```{r chunk_43, message=FALSE, warning=FALSE}
+# Perform inner join to get only matching records
+matched_data <- inner_join(clinical_data,sample_maternal_data,
+                by = c("ORIG_ID", "SITE", "GA_WEEKS"))
+
+# Display dimensions and summary
+cat("Dimensions of datasets:\n")
+cat("Clinical data:", dim(clinical_data), "\n")
+cat("Sample maternal data:", dim(sample_maternal_data), "\n")
+cat("Matched data:", dim(matched_data), "\n")
+
+head(matched_data)
+```
+
+```{r chunk_44, message=FALSE, warning=FALSE}
+
+```
+
